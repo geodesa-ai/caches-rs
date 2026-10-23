@@ -376,17 +376,18 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
                 self.p += delta;
             }
 
-            // potentially need to make room in the cache
-            if self.recent.len() + self.frequent.len() >= self.size {
-                self.replace(false);
-            }
-
+            // Detach the promoted ghost before replacement can evict it from
+            // the bounded ghost list while inserting the new victim.
             // remove from recent evict
             let mut ent = self.recent_evict.map.remove(&key_ref).unwrap();
             unsafe {
                 let ent_ptr = ent.as_mut();
                 self.recent_evict.detach(ent_ptr);
                 swap_value(&mut v, ent_ptr);
+            }
+            // potentially need to make room in the cache
+            if self.recent.len() + self.frequent.len() >= self.size {
+                self.replace(false);
             }
 
             // add the key to the frequently used list
@@ -409,17 +410,18 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
                 self.p -= delta;
             }
 
-            // Potentially need to make room in the cache
-            if recent_len + freq_len >= self.size {
-                self.replace(true);
-            }
-
+            // Detach the promoted ghost before replacement can evict it from
+            // the bounded ghost list while inserting the new victim.
             // remove from frequent evict
             let mut ent = self.frequent_evict.map.remove(&key_ref).unwrap();
             unsafe {
                 let ent_ptr = ent.as_mut();
                 self.frequent_evict.detach(ent_ptr);
                 swap_value(&mut v, ent_ptr);
+            }
+            // Potentially need to make room in the cache
+            if recent_len + freq_len >= self.size {
+                self.replace(true);
             }
 
             // add the key to the frequently used list
@@ -1727,8 +1729,12 @@ impl<K: Hash + Eq, V, RH: BuildHasher, REH: BuildHasher, FH: BuildHasher, FEH: B
     /// based on the current learned value of P
     fn replace(&mut self, freq_contains_key: bool) {
         let recent_evict_len = self.recent.len();
+        // A learned partition can reach the full capacity. If the frequent
+        // list is empty, replacement must still evict from the recent list.
         if recent_evict_len > 0
-            && (recent_evict_len > self.p || (recent_evict_len == self.p && freq_contains_key))
+            && (self.frequent.is_empty()
+                || recent_evict_len > self.p
+                || (recent_evict_len == self.p && freq_contains_key))
         {
             match self.recent.remove_lru_in() {
                 None => None,
